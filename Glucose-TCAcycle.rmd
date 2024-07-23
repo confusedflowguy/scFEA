@@ -1,0 +1,158 @@
+---
+title: "scFEA"
+author: "MinJae Kim"
+date: "2024-07-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+##### Load required libraries
+
+```{r, message = FALSE}
+library(Seurat)
+library(ggplot2)
+library(data.table)
+library(stringr)
+library(dplyr)
+```
+
+##### Set the data path for the scFEA analysis. Load required files.
+
+```{r}
+data_path <- '/Users/mj/Documents/lab/scFEA/hfd/'
+hfd_obj <- readRDS(paste0(data_path, 'clean_hfd_harmony_unannotated_res0.55.rds'))
+```
+
+##### Create subdirectory named with today's date. Create directories named input and output within that folder.
+
+```{r}
+dir.create(file.path(data_path, Sys.Date()))
+subdir_path <- paste0(data_path, Sys.Date())
+input_dir <- paste0(file.path(subdir_path, "input"))
+dir.create(input_dir)
+output_dir <- paste0(file.path(subdir_path, "output"))
+dir.create(output_dir)
+```
+
+##### Trim the original data to contain only genes used for the flux computation
+
+```{r}
+scFEA_mouse_genes <- read.table(paste0(data_path, '/scFEA.mouse.genes.txt'))
+trimmed_hfd_obj <- subset(hfd_obj, features = scFEA_mouse_genes$V1)
+```
+
+##### Write the trimmed object into a .csv file
+
+```{r}
+write_out <- as.data.frame(as.matrix(trimmed_hfd_obj@assays$RNA@data))
+fwrite(x = write_out, row.names = TRUE, file = paste0(input_dir, '/trimmed_hfd_data.csv'))
+```
+
+##### Go to http://scflux.org/, select the species and the network. Save the output files into /Users/mj/Documents/lab/scFEA/hfd/%date%/output
+
+##### Load the web-generated output files (.csv)
+
+```{r}
+predFlux <- read.csv(paste0(output_dir, '/trimmed_hfd_data_flux.csv'), header = T, row.names = 1)
+predFlux <- data.matrix(predFlux)
+predFlux0 <- t(predFlux)
+#If not using the web-based version, I found it necessary to substitute "." into "-" in the cell barcodes for the downstream analysis. May be a bug:
+#colnames(predFlux0) <- gsub("\\.", "-", colnames(predFlux0))
+```
+
+##### Add Flux as a new assay
+
+```{r}
+hfd_obj@assays$FLUX <- CreateAssayObject(counts = predFlux0)
+```
+
+##### Change default assay to FLUX (can change back any time)
+
+```{r}
+DefaultAssay(hfd_obj) <- 'FLUX'
+```
+
+##### Create a list of names and annotate the clusters. Will make the graph easier to read
+```{r}
+moduleinfo <- read.csv(paste0(output_dir, '/scFEA.Glucose-TCAcycle.mouse.moduleinfo.csv'), header = T)
+module.name <- moduleinfo['M_name']
+module.id <- moduleinfo['M_id']
+```
+
+##### Create a list of modules. This will be useful for drawing plots
+
+```{r}
+nmodules <- ncol(predFlux)
+modules <- colnames(predFlux)
+modules <- gsub("\\_", "-", modules)
+```
+
+##### Rename/annotate cluster ids. This will make it easier to read plots
+```{r}
+cluster.ids <- c("ST2hi p1", "ST2hi p2", "Precursor-like", "TCF+ p1", "TCF+ p2", "TCF+ p3", "Tbet+", "ST2hi p3")
+names(cluster.ids) <- levels(hfd_obj)
+hfd_obj <- RenameIdents(hfd_obj, cluster.ids)
+```
+
+
+
+##### Show the original umap from the RNA data
+```{r}
+fig7d <- DimPlot(hfd_obj, reduction = "umap", split.by = "Groups") + ggtitle('Fig 7d')
+fig7d
+```
+
+##### Find variable features, scale data
+```{r}
+hfd_obj <- FindVariableFeatures(hfd_obj, selection.method = "vst", nfeatures = 2000, verbose = F)
+hfd_obj <- ScaleData(hfd_obj, features = rownames(hfd_obj), assay = 'FLUX', verbose = F)
+```
+
+
+##### Output RidgePlot
+```{r}
+for (i in 1:nmodules) {
+  rplt <- (RidgePlot(hfd_obj, features = modules[i], group.by = "Groups") & ggtitle(module.name[i,]))
+  print(rplt)
+}
+```
+##### Output Dotplot and VlnPlot
+
+```{r}
+for (i in 1:nmodules) {
+  vplt <- (VlnPlot(hfd_obj, pt.size = 0.3, features = modules[i], group.by = "Groups") & ggtitle(module.name[i,]))
+  print(vplt)
+}
+```
+
+```{r}
+ae <- AverageExpression(hfd_obj, assays = 'FLUX', layer = 'data', group.by = 'Groups')
+ae <- as.data.frame(as.matrix(ae))
+ae <- as.data.frame(as.matrix(ae$V1$FLUX))
+ae$modules <- module.name$M_name
+ae
+
+DotPlot(hfd_obj, features = modules, group.by = 'Groups', scale = FALSE) + RotatedAxis()
+DotPlot(hfd_obj, features = modules, split.by = "Groups") + RotatedAxis()
+DotPlot(hfd_obj, features = modules, split.by = "Groups") + RotatedAxis()
+DotPlot(hfd_obj, features = modules[0:(nmodules/2)], split.by = "Groups") + RotatedAxis()
+DotPlot(hfd_obj, features = modules[(nmodules/2):nmodules], split.by = "Groups") + RotatedAxis()
+```
+
+##### Output Heatmap
+```{r}
+DoHeatmap(hfd_obj, features = modules[0:(nmodules/2)], group.by = "Groups")
+DoHeatmap(hfd_obj, features = modules[(nmodules/2):nmodules], group.by = "Groups")
+```
+
+##### Output FeaturePlot
+```{r}
+for (i in 1:nmodules) {
+  fplot <- FeaturePlot(hfd_obj, pt.size = 2, features = modules[i], split.by = "Groups") & ggtitle(module.name[i,])
+  print(fplot)
+}
+```
+
