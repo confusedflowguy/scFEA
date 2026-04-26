@@ -1,0 +1,161 @@
+---
+title: "scFEA"
+author: "MinJae Kim"
+date: "2024-08-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+##### Load required libraries
+
+```{r, message = FALSE}
+library(Seurat)
+library(ggplot2)
+library(data.table)
+library(stringr)
+library(dplyr)
+```
+
+##### Set the data path for the scFEA analysis. Load required files.
+
+```{r}
+setwd('/Users/mj/Developer/GitHub/scFEA/GSE175746')
+seurat_obj <- readRDS('/Users/mj/Developer/data/GSE175746_JL/postprocessing.rds')
+```
+
+##### Create subdirectory named with today's date. Create directories named input and output within that folder.
+
+```{r}
+dir.create('./output')
+```
+
+##### Trim the original data to contain only genes used for the flux computation
+
+```{r}
+scFEA_mouse_genes <- read.table('/Users/mj/Developer/GitHub/scFEA/scFEA.mouse.genes.txt')
+trimmed_seurat_obj <- subset(seurat_obj@assays$SCT, features = scFEA_mouse_genes$V1)
+```
+
+
+##### Write the trimmed object into a .csv file
+
+```{r}
+write_out <- as.data.frame(as.matrix(seurat_obj@assays$SCT@counts))
+fwrite(x = write_out, row.names = TRUE, file = '/Users/mj/Developer/scFEA/input/080824_counts.csv')
+```
+
+##### Run scFEA
+
+```{bash}
+%%bash
+cd /Users/mj/Developer/scFEA
+python3 src/scFEA.py --data_dir data --input_dir input \
+                    --test_file 080824_counts.csv \
+                    --moduleGene_file module_gene_complete_mouse_m168.csv \
+                    --stoichiometry_matrix cmMat_complete_mouse_c70_m168.csv \
+                    --sc_imputation True \
+                    --cName_file cName_complete_mouse_c70_m168.csv \
+                    --output_flux_file output/080824_counts_m168_flux.csv \
+                    --output_balance_file output/080824_counts_balance.csv
+```
+
+##### Load the web-generated output files (.csv)
+
+```{r}
+predFlux <- read.csv('/Users/mj/Developer/GitHub/scFEA/GSE175746/output/counts_data_m168_flux.csv', header = T, row.names = 1)
+predFlux <- data.matrix(predFlux)
+predFlux0 <- t(predFlux)
+#If not using the web-based version, I found it necessary to substitute "." into "-" in the cell barcodes for the downstream analysis. May be a bug:
+#colnames(predFlux0) <- gsub("\\.", "-", colnames(predFlux0))
+```
+
+##### Add Flux as a new assay
+
+```{r}
+seurat_obj@assays$FLUX <- CreateAssayObject(counts = predFlux0)
+```
+
+##### Change default assay to FLUX (can change back any time)
+
+```{r}
+DefaultAssay(seurat_obj) <- 'FLUX'
+```
+
+##### Create a list of names and annotate the clusters. Will make the graph easier to read
+```{r}
+moduleinfo <- read.csv('/Users/mj/Developer/scFEA/data/scFEA.M171.mouse.moduleinfo.csv', header = T)
+module.name <- moduleinfo['M_name']
+module.id <- moduleinfo['M_id']
+```
+
+##### Create a list of modules. This will be useful for drawing plots
+
+```{r}
+nmodules <- ncol(predFlux)
+modules <- colnames(predFlux)
+modules <- gsub("\\_", "-", modules)
+```
+
+##### Rename/annotate cluster ids. This will make it easier to read plots
+```{r, eval = FALSE}
+cluster.ids <- c("ST2hi p1", "ST2hi p2", "Precursor-like", "TCF+ p1", "TCF+ p2", "TCF+ p3", "Tbet+", "ST2hi p3")
+names(cluster.ids) <- levels(hfd_obj)
+hfd_obj <- RenameIdents(hfd_obj, cluster.ids)
+```
+
+
+
+##### Show the original umap from the RNA data
+```{r, eval = FALSE}
+fig7d <- DimPlot(hfd_obj, reduction = "umap", split.by = "Groups") + ggtitle('Fig 7d')
+fig7d
+```
+
+##### Find variable features, scale data
+```{r}
+seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = 2000, verbose = F)
+seurat_obj <- ScaleData(seurat_obj, features = rownames(seurat_obj), assay = 'FLUX', verbose = F)
+```
+
+
+##### Output RidgePlot
+```{r}
+for (i in 1:nmodules) {
+  rplt <- (RidgePlot(seurat_obj, features = modules[i], group.by = "orig.ident") & ggtitle(module.name[i,]))
+  print(rplt)
+}
+```
+##### Output Dotplot and VlnPlot
+
+```{r}
+for (i in 1:nmodules) {
+  vplt <- (VlnPlot(seurat_obj, pt.size = 0.3, features = modules[i], group.by = "orig.ident", log = TRUE) & ggtitle(module.name[i,]))
+  print(vplt)
+}
+```
+
+```{r}
+DotPlot(seurat_obj, features = modules, group.by = 'orig.ident', scale = FALSE) + RotatedAxis()
+DotPlot(seurat_obj, features = modules, split.by = "orig.ident") + RotatedAxis()
+DotPlot(seurat_obj, features = modules, split.by = "orig.ident") + RotatedAxis()
+DotPlot(seurat_obj, features = modules[0:10], split.by = "orig.ident") + RotatedAxis()
+DotPlot(seurat_obj, features = modules[11:20], split.by = "orig.ident") + RotatedAxis()
+```
+
+##### Output Heatmap
+```{r}
+DoHeatmap(seurat_obj, features = modules[0:(nmodules/2)], group.by = "orig.ident")
+DoHeatmap(seurat_obj, features = modules[(nmodules/2):nmodules], group.by = "orig.ident")
+```
+
+##### Output FeaturePlot
+```{r}
+for (i in 1:nmodules) {
+  fplot <- FeaturePlot(seurat_obj, pt.size = 2, features = modules[i], split.by = "orig.ident") & ggtitle(module.name[i,])
+  print(fplot)
+}
+```
+
